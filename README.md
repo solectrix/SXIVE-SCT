@@ -1,2 +1,2 @@
-# sxive-sct
+# SXIVE-SCT
 SXIVE Sensor Configuration Tool

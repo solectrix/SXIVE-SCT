@@ -242,3 +242,59 @@ sig3.new(Sxl.Flag, name="ResetState",
 |desc|(*Optional*) Description of a master port.|
 |pos|(**Mandatory**) Bit position within underlying signal.|
 |tags|(*Optional*) List of tags separated by space, can be used for signal filtering or application specific grouping.|
+
+### SXL Table
+
+A table is a representation of a structured vector of equal elements. It can be used to describe arrays of data with only one SXL element.
+
+There are two ways to describe SXL Tables:
+ - Method 1: by describing columns and number of rows
+ - Method 2: by describing all rows and their underlying signals (overdescription)
+
+![SXL_table](images/SXL_table.png)
+
+#### Method 1
+
+```python
+table = block.new(Sxl.Table, "pwl", dict(desc="PWL mapping x to y", addr="0x40", length="16", stride="0x08"))
+table.new(Sxl.Column, "x", dict(desc="PWL input", addr="0x00", pos="31:0", type="U32"))
+table.new(Sxl.Column, "y", dict(desc="PWL output", addr="0x04", pos="31:0", type="U16.16"))
+```
+
+The SXL Table element allocates a memory of _stride*length_, while _stride_ is the size of a row in bytes and the _length_ is the length of the table, or number of row elements. The table is then further defined by SXL Column elements that behave like Block Signals with attributes addr (offset to each row start), pos (bit range of column signal relative to the column addr), and optionally a data type to allow interpreting of the contained data. The size of all declared column elements must fit into the stride of the table.
+
+#### Method 2
+
+Another method is to over-describe the table using rows and signals. This leads to the same result, but allows to take special use cases into account, or to give dedicated row and signal names.
+
+```python
+table = block.new(Sxl.Table, "pwl", dict(desc="PWL mapping x to y", addr="0x0100"))
+table.new(Sxl.Column, "x", dict(desc="PWL input", addr="0x00", pos="31:0", type="U32"))
+table.new(Sxl.Column, "y", dict(desc="PWL output", addr="0x04", pos="31:0", type="U16.16"))
+# describe rows and signals of rows
+row0 = table.new(Sxl.Row, "row0", dict(addr="0x00", desc="Custom row 0"))
+row0.new(Sxl.Sig, "x0", dict(desc="PWL input 0", addr="0x00", pos="31:0", type="U32"))
+row0.new(Sxl.Sig, "y0", dict(desc="PWL output 0", addr="0x04", pos="31:0", type="U16.16"))
+row1 = table.new(Sxl.Row, "row1", dict(addr="0x08", desc="Custom row 1"))
+row1.new(Sxl.Sig, "x1", dict(desc="PWL input 1", addr="0x00", pos="31:0", type="U32"))
+row1.new(Sxl.Sig, "y1", dict(desc="PWL output 1", addr="0x04", pos="31:0", type="U16.16"))
+...
+```
+
+#### Attributes of SXL Table
+|Name|Mnemonics|
+|----|---------|
+|desc|(*Optional*) Description of a master port.|
+|addr|(**Mandatory**) Offset address of the SXL register inside SXL Block address range.|
+|length|(Method 1: **Mandatory**) Number of table rows.|
+|stride|(Method 1: **Mandatory**) Byte gap between individual rows.|
+|tags|(*Optional*) List of tags separated by space, can be used for signal filtering or application specific grouping.|
+
+#### Attributes of SXL Column / SXL Signal
+|Name|Mnemonics|
+|----|---------|
+|desc|(*Optional*) Description of a master port.|
+|addr|(**Mandatory**) Offset address of the SXL register inside SXL Block address range.|
+|pos|(**Mandatory**) Bit range of underlying signal relative to the address offset.|
+|type|(*Optional*) Type declaration of the underlying signal.|
+

@@ -95,6 +95,21 @@ class SxlTest(unittest.TestCase):
         icon.new( Sxl.Slv, sep_name, dict(addr="0", size="0", block=sep_name))
         icon.new( Sxl.Slv, "TaggedBlock", dict(addr="0x34001000", size="0x1000", block="TaggedBlock"))
 
+        # create sample table
+        # method 1
+        table = block.new(Sxl.Table, "pwl0", dict(desc="text PWL mapping x to y", addr="0x40", length="16", stride="0x08", tags="pwl0"))
+        table.new(Sxl.Column, "x", dict(desc="PWL input", addr="0x00", pos="31:0", type="U32"))
+        table.new(Sxl.Column, "y", dict(desc="PWL output", addr="0x04", pos="31:0", type="U16.16"))
+        # method 2
+        table = block.new(Sxl.Table, "pwl1", dict(desc="text PWL mapping x to y", addr="0xC0", tags="pwl1"))
+        table.new(Sxl.Column, "x", dict(desc="PWL input", addr="0x00", pos="31:0", type="U32"))
+        table.new(Sxl.Column, "y", dict(desc="PWL output", addr="0x04", pos="31:0", type="U16.16"))
+        # additional details about rows and signals of rows
+        for i in range(16):
+            row = table.new(Sxl.Row, f"row{i}", dict(addr=f"0x{8*i:02X}", desc=f"Custom row {i}"))
+            row.new(Sxl.Sig, f"x{i}", dict(desc=f"PWL input {i}", addr="0x00", pos="31:0", type="U32"))
+            row.new(Sxl.Sig, f"y{i}", dict(desc=f"PWL output {i}", addr="0x04", pos="31:0", type="U16.16"))
+
         # save sxl file
         sxl_path = Path(os.path.dirname(__file__)) / "test.sxl"
         root.save(sxl_path)

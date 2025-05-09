@@ -12,7 +12,7 @@ PORT_TIP = "Enter port number of the SXIVE socket server!"
 DEVICE_TIP = "Enter I\u00b2C device address of the sensor!\nLeave empty if already defined by SXL definition!\nUse hex notation (0xNN)!"
 
 class SocketPopup:
-    def __init__(self, tk_root: tk.Tk, socket: SocketIO):
+    def __init__(self, tk_root: tk.Tk, socket: SocketIO, reconnect: bool=False):
         self.tk_root = tk_root
         self.tk_status = tk.StringVar()
         # bind server address to tk widget
@@ -26,7 +26,11 @@ class SocketPopup:
         self.device_addr.set(socket.device_addr)
 
         self.socket = socket
-        self._create_toolbox_window()
+        self.reconnect = reconnect
+        if reconnect:
+            self._connect_socket()
+        else:
+            self._create_toolbox_window()
     
     def _close_toolbox(self):
         """Close toolbox."""
@@ -88,11 +92,12 @@ class SocketPopup:
         """Call the socket connect function."""
         try:
             self.socket.connect(self.server.get(), self.port.get(), self.device_addr.get())
-            self.tk_status.set("Connected.")
-            self.target_win.update()
-            self.tk_root.event_generate(SOCKET_EVENT)
-            self.target_win.after(POPUP_WAIT)
-            self._close_toolbox()
+            if not self.reconnect:
+                self.tk_status.set("Connected.")
+                self.target_win.update()
+                self.tk_root.event_generate(SOCKET_EVENT)
+                self.target_win.after(POPUP_WAIT)
+                self._close_toolbox()
         except SocketError as e:
             self.tk_status.set(e)
             self.target_win.update()

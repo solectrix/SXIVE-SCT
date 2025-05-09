@@ -19,15 +19,20 @@ try:
     USE_THEMES = True
 except ImportError:
     USE_THEMES = False
-from ui import Icons
-from ui import TreeviewToolTip
+from ui import Icons, TreeviewToolTip, EditableTableWidget
+from utils import get_int_value
 from socket_io import SocketIO, SocketPopup
 from sxl import Sxl, SxlRoot
+
+class ToolboxStates:
+    closed = 0
+    shutdown = 1
+    opened = 2
 
 class DasTool(tk.Tk):
     """TKinter representation of DasTool."""
     name = os.path.splitext(os.path.split(__file__)[1])[0].replace("_", " ")
-    version = "0.1"
+    version = "0.2"
     config_file = os.path.splitext(os.path.split(__file__)[1])[0] + ".json"
 
     def __init__(self) -> None:
@@ -58,9 +63,12 @@ class DasTool(tk.Tk):
                              "vista", "winnative", "winxpblue", "xpnative", "yaru"]
         self.colors = dict(
             bright={Sxl.Block:"#c0f0c0", Sxl.Reg:"#c0c0f0", Sxl.Sig:"#f0f0c0", 
-                    Sxl.Enum:"#f0c080", Sxl.Flag:"#e0a0d0"},
+                    Sxl.Enum:"#f0c080", Sxl.Flag:"#e0a0d0", Sxl.Table:"#a0d0f0",
+                    Sxl.Row:"#c0e0f0"},
             dark  ={Sxl.Block:"#336633", Sxl.Reg:"#444466", Sxl.Sig:"#666622", 
-                    Sxl.Enum:"#664433", Sxl.Flag:"#664455"})
+                    Sxl.Enum:"#664433", Sxl.Flag:"#664455", Sxl.Table:"#334455",
+                    Sxl.Row:"#223344"})
+        
         # initialize tool
         self.ui_create()
         self.ui_init()
@@ -70,6 +78,9 @@ class DasTool(tk.Tk):
         self.tooltip = TreeviewToolTip(das_tool=self, tree=self.tree, delay=1000)
         self.bind_all(sequence="<<socket_connected>>",func=self.socket_event_connected)
         self.about_win = None
+
+        self.value_toolbox_state = ToolboxStates.closed
+        self.table_toolbox_state = ToolboxStates.closed
 
     # menu actions
     def menu_create(self):
@@ -89,6 +100,8 @@ class DasTool(tk.Tk):
             label="Open Target..", command=self.socket_connect)
         target_menu.add_command(
             label="Close Target..", command=self.socket_disconnect, state=tk.DISABLED)
+        target_menu.add_command(
+            label="Reconnect", command=self.socket_reconnect)
         # add View menu
         view_menu = tk.Menu(master=menubar, tearoff=False)
         view_menu.add_command(
@@ -169,7 +182,7 @@ class DasTool(tk.Tk):
                      "Control Summary:\n"\
                      "    [F1] - Read from target\n"\
                      "    [F2] - Modify target values\n\n"\
-                     "\u00A9 Solectrix GmbH, 2024"
+                     "\u00A9 Solectrix GmbH, 2024-2025"
         # create toolbox window
         self.about_win = tk.Toplevel()
         self.about_win.title(string="About")
@@ -291,6 +304,14 @@ class DasTool(tk.Tk):
         # update ui title
         self.ui_title_update()
 
+    def socket_reconnect(self):
+        # disconnect if still connected
+        self.socket_disconnect()
+        # try to connect target via underlying socket communication layer
+        SocketPopup(tk_root=self, socket=self.sock, reconnect=True)
+        # update ui title
+        self.ui_title_update()
+
     def socket_event_connected(self, event=None):
         """Callback function to be executed when <<socket_connected>> event was raised"""
         # disable/enable menu items
@@ -321,13 +342,13 @@ class DasTool(tk.Tk):
             open_list = list()
             if filter_type == Sxl.Reg:
                 # registers
-                for reg in self.sxl.get_objects_of_type(type=Sxl.Reg):
+                for reg in self.sxl.get_objects_of_type(Sxl.Reg):
                     item = reg.parent
                     if item not in open_list:
                         open_list.append(item)
             elif filter_type == Sxl.Sig:
                 # signals
-                for sig in self.sxl.get_objects_of_type(type=Sxl.Sig):
+                for sig in self.sxl.get_objects_of_type(Sxl.Sig):
                     item = sig.parent
                     if item not in open_list:
                         open_list.append(item)
@@ -357,7 +378,7 @@ class DasTool(tk.Tk):
     # treeview actions
     def treeview_add(self, node: str, item, addr: int, tag_ok: bool=False):
         """Recursive creation of SXL hierarchy in treeview widget"""
-        node_copy = None
+        item_node = None
         filter_type = self.cfg_filter["type"].get().lower()
         filter_str = self.cfg_filter["str"].get().lower()
         ok = True
@@ -365,14 +386,104 @@ class DasTool(tk.Tk):
             # apply tag filter
             if filter_type == "tag" and filter_str != "":
                 tag_ok |= True in [fnmatch.fnmatchcase(name=i.lower(),pat=filter_str) for i in item.get_attr("tags").split(" ")]
-            node_copy = self.tree.insert(parent="", index=tk.END, text=item.name, values="")
+            item_node = self.tree.insert(parent="", index=tk.END, text=item.name, values="")
             if addr < 0:
                 # headless SXL Block, no start address defined
-                self.tree.set(item=node_copy, column="info", value="N/A")
+                self.tree.set(item=item_node, column="info", value="N/A")
                 addr = 0
             else:
-                self.tree.set(item=node_copy, column="info", value=f"0x{addr:08X}")
-            self.tree.item(item=node_copy, tags=Sxl.Block)
+                self.tree.set(item=item_node, column="info", value=f"0x{addr:08X}")
+            self.tree.item(item=item_node, tags=Sxl.Block)
+        elif item.type == Sxl.Table:
+            # apply tag filter
+            if not tag_ok:
+                if filter_type == "tag" and filter_str != "":
+                    ok = True in [fnmatch.fnmatchcase(name=i.lower(),pat=filter_str) for i in item.get_attr("tags").split(" ")]
+                    tag_ok |= ok
+            if ok or tag_ok:
+                # add mode icon
+                if item.get_attr("mode").lower() == "ro":
+                    image=self.icons.iconModeRO
+                elif item.get_attr("mode").lower() == "wo":
+                    image=self.icons.iconModeWO
+                elif item.get_attr("mode").lower() == "t":
+                    image=self.icons.iconModeT
+                else:
+                    image=self.icons.iconModeRW
+                item_node = self.tree.insert(parent=node, index=tk.END, text=item.name, values="", image=image)
+                addr += int(item.get_attr("addr"), 0)
+                self.tree.set(item=item_node, column="info", value=f"0x{addr:08X}")
+                self.tree.item(item=item_node, tags=Sxl.Table)
+                # create PWL table items
+                elem_labels = []
+                elem_addr = []
+                elem_pos = []
+                sxl_columns = []
+                for col in item.get_objects_of_type(Sxl.Column):
+                    sxl_columns.append(col)
+                    elem_labels.append(col.name)
+                    elem_addr.append(col.get_attr("addr"))
+                    elem_pos.append(col.get_attr("pos"))
+                # add column labels
+                self.tree.set(item=item_node, column="data", value=f"({', '.join(elem_labels)})")
+
+                if item.num_objects_of_type(Sxl.Row) == 0:
+                    # method 1 declaration of SXL table
+                    # specify rows and signals to complete method 2 declaration for use for proper event bindings
+                    sxl_ok = True
+                    try:
+                        stride = int(item.get_attr("stride"), 0)
+                    except:
+                        print(f"Error: SXL Table {item.name} does not contain mandatory attribute 'stride'!")
+                        sxl_ok = False
+                    try:
+                        length = int(item.get_attr("length"), 0)
+                    except:
+                        print(f"Error: SXL Table {item.name} does not contain mandatory attribute 'len'!")
+                        sxl_ok = False
+
+                    if sxl_ok:
+                        for i in range(length):
+                            row_addr = i*stride
+                            row_node = self.tree.insert(parent=item_node, index=tk.END, text=f"[{i}]", values="")
+                            # create SXL Rows for convenience
+                            row_item = item.new(Sxl.Row, f"[{i}]",
+                                                dict(desc=f"{item.get_attr('desc')}\nRow {i}",
+                                                    addr=f"0x{row_addr:08X}"))
+                            # node dict of items
+                            self.sxl_obj_dict[row_node] = row_item
+                            # item dict of nodes
+                            self.sxl_node_dict[row_item] = row_node
+
+                            # add row signals to completely specify table tree
+                            for col in sxl_columns:
+                                sig_addr = get_int_value(col.get_attr("addr"))
+                                sig_addr_str = f"0x{sig_addr:08X}"
+                                sig_item = row_item.new(Sxl.Sig, col.name,
+                                                    dict(desc=f"{item.get_attr('desc')}\nRow {i}, Col {col.name}",
+                                                        addr=sig_addr_str))
+                                sig_item.set_attr("pos", col.get_attr("pos"))
+                                sig_item.set_attr("type", col.get_attr("type"))
+                                sig_item.set_attr("addr", sig_addr_str)
+                            
+                            # insert treeview row element
+                            row_addr += addr
+                            self.tree.set(item=row_node, column="info", value=f"0x{row_addr:08X}")
+                            self.tree.item(item=row_node, tags=Sxl.Row)
+                else:
+                    # method 2 parsing of SXL table
+                    for row_item in item.get_objects_of_type(Sxl.Row):
+                        row_addr = get_int_value(row_item.get_attr("addr"))
+                        row_node = self.tree.insert(parent=item_node, index=tk.END, text=row_item.name, values="")
+                        # node dict of items
+                        self.sxl_obj_dict[row_node] = row_item
+                        # item dict of nodes
+                        self.sxl_node_dict[row_item] = row_node
+
+                        # insert treeview row element
+                        row_addr += addr
+                        self.tree.set(item=row_node, column="info", value=f"0x{row_addr:08X}")
+                        self.tree.item(item=row_node, tags=Sxl.Row)
         elif item.type == Sxl.Reg:
             # apply register & tag filter
             if not tag_ok:
@@ -382,10 +493,10 @@ class DasTool(tk.Tk):
                     ok = True in [fnmatch.fnmatchcase(name=i.lower(),pat=filter_str) for i in item.get_attr("tags").split(" ")]
                     tag_ok |= ok
             if ok or tag_ok:
-                node_copy = self.tree.insert(parent=node, index=tk.END, text=item.name, values="")
+                item_node = self.tree.insert(parent=node, index=tk.END, text=item.name, values="")
                 addr += int(item.get_attr("addr"), 0)
-                self.tree.set(item=node_copy, column="info", value=f"0x{addr:08X}")
-                self.tree.item(item=node_copy, tags=Sxl.Reg)
+                self.tree.set(item=item_node, column="info", value=f"0x{addr:08X}")
+                self.tree.item(item=item_node, tags=Sxl.Reg)
         elif item.type == Sxl.Sig:
             # apply signal & tag filter
             if not tag_ok:
@@ -406,40 +517,50 @@ class DasTool(tk.Tk):
                     image=self.icons.iconModeT
                 else:
                     image=self.icons.iconModeRW
-                node_copy = self.tree.insert(parent=node, index=tk.END, text=item.name, values="", image=image)
                 if item.parent.type == Sxl.Block and item.has_attr("addr"):
+                    item_node = self.tree.insert(parent=node, index=tk.END, text=item.name, values="", image=image)
                     addr += int(item.get_attr("addr"), 0)
                     pos = f"0x{addr:08X} [{item.get_attr('pos')}]"
-                else:
+                    self.tree.set(item=item_node, column="info", value=pos)
+                    self.tree.item(item=item_node, tags=Sxl.Sig)
+                elif item.parent.type != Sxl.Table:
+                    item_node = self.tree.insert(parent=node, index=tk.END, text=item.name, values="", image=image)
+                    # ignore table signals here as they were created in the table branch
                     pos = item.get_attr("pos")
-                self.tree.set(item=node_copy, column="info", value=pos)
-                self.tree.item(item=node_copy, tags=Sxl.Sig)
+                    self.tree.set(item=item_node, column="info", value=pos)
+                    self.tree.item(item=item_node, tags=Sxl.Sig)
         elif item.type == Sxl.Enum:
-            node_copy = self.tree.insert(parent=node, index=tk.END, text=item.name, values="")
+            item_node = self.tree.insert(parent=node, index=tk.END, text=item.name, values="")
             value = item.get_attr("value")
-            self.tree.set(item=node_copy, column="info", value=value)
-            self.tree.item(item=node_copy, tags=Sxl.Enum)
+            self.tree.set(item=item_node, column="info", value=value)
+            self.tree.item(item=item_node, tags=Sxl.Enum)
         elif item.type == Sxl.Flag:
-            node_copy = self.tree.insert(parent=node, index=tk.END, text=item.name, values="")
+            item_node = self.tree.insert(parent=node, index=tk.END, text=item.name, values="")
             pos = item.get_attr("pos")
-            self.tree.set(item=node_copy, column="info", value=pos)
-            self.tree.item(item=node_copy, tags=Sxl.Flag)
+            self.tree.set(item=item_node, column="info", value=pos)
+            self.tree.item(item=item_node, tags=Sxl.Flag)
         else:
             # unknown item
             return
-        # node dict of items
-        self.sxl_obj_dict[node_copy] = item
-        # item dict of nodes
-        self.sxl_node_dict[item] = node_copy
+        
+        if item_node is not None:
+            # node dict of items
+            self.sxl_obj_dict[item_node] = item
+            # item dict of nodes
+            self.sxl_node_dict[item] = item_node
+        
         # handle all children
         if ok or tag_ok:
             for item_ in item.objects:
-                self.treeview_add(node=node_copy, item=item_, addr=addr, tag_ok=tag_ok)
+                self.treeview_add(node=item_node, item=item_, addr=addr, tag_ok=tag_ok)
 
     def treeview_gen(self):
         """Generate a treeview."""
         if not self.tree:
             return
+        # clear dicts
+        self.sxl_obj_dict = dict()
+        self.sxl_node_dict = dict()
         # clear treeview widget
         if self.tree:
             self.tree.delete(*self.tree.get_children())
@@ -449,7 +570,7 @@ class DasTool(tk.Tk):
         top = self.sxl.findIconTop()
         if top is None:
             # no toplevel interconnect tree found, just iterate through all blocks
-            for block in self.sxl.get_objects_of_type(type=Sxl.Block):
+            for block in self.sxl.get_objects_of_type(Sxl.Block):
                 self.treeview_add(node=None, item=block, addr=-1, tag_ok=False)
         else:
             # iterate through SXL hierarchy
@@ -459,46 +580,77 @@ class DasTool(tk.Tk):
                 if self.sock.connected and self.sock.device_addr_int >= 0:
                     block_addr = (self.sock.device_addr_int << 24) | (block_addr & 0xFFFFFF)
                 self.treeview_add(node=None, item=block, addr=block_addr, tag_ok=False)
+        # sort by addr
+        self.treeview_sort_column(column="info")
         # update reset column
         self.toggle_menu_show_reset_column()
 
-    def treeview_update_node(self, event=None):
+    def treeview_update_node(self, event=None, node=None):
         """Update treeview contents."""
         if not self.tree or not self.sock.connected:
             return
         # get selected treeview node
-        node = self.tree.selection()
-        if not node:
+        if node is None:
+            node = self.tree.selection()
+            if node is not None:
+                node = node[0]
+        if node is None:
             return
         # get selected SXL object
-        sxl_obj = self.sxl_obj_dict[node[0]]
+        sxl_obj = self.sxl_obj_dict[node]
         # SXL object type depending actions
         if sxl_obj.type == Sxl.Block:
             # Block
             for child in sxl_obj.objects:
                 if child.type == Sxl.Reg:
                     # for all registers of a Block
-                    self.treeview_refresh(sxl_obj=child)
+                    self.treeview_refresh_signal(sxl_obj=child)
                 elif child.type == Sxl.Sig:
                     # for all signals of a Block
-                    self.treeview_refresh(sxl_obj=child, block_sig=True)
+                    self.treeview_refresh_signal(sxl_obj=child, block_sig=True)
+                elif child.type == Sxl.Table:
+                    # for a table of a Block
+                    self.treeview_update_node(node=self.sxl_node_dict[child])
         elif sxl_obj.type == Sxl.Reg:
             # Register
-            self.treeview_refresh(sxl_obj=sxl_obj)
+            self.treeview_refresh_signal(sxl_obj=sxl_obj)
         elif sxl_obj.type == Sxl.Sig and sxl_obj.parent.type == Sxl.Reg:
             # Signal of a register
-            self.treeview_refresh(sxl_obj=sxl_obj.parent)
+            self.treeview_refresh_signal(sxl_obj=sxl_obj.parent)
         elif sxl_obj.type == Sxl.Sig and sxl_obj.parent.type == Sxl.Block:
             # Signal of a block
-            self.treeview_refresh(sxl_obj=sxl_obj, block_sig=True)
+            self.treeview_refresh_signal(sxl_obj=sxl_obj, block_sig=True)
         elif (sxl_obj.type == Sxl.Enum or sxl_obj.type == Sxl.Flag) and \
               sxl_obj.parent.parent.type == Sxl.Block:
             # Enum/Flag of a block signal
-            self.treeview_refresh(sxl_obj=sxl_obj.parent, block_sig=True)
+            self.treeview_refresh_signal(sxl_obj=sxl_obj.parent, block_sig=True)
         elif (sxl_obj.type == Sxl.Enum or sxl_obj.type == Sxl.Flag) and \
               sxl_obj.parent.parent.type == Sxl.Reg:
             # Enum/Flag of a register signal
-            self.treeview_refresh(sxl_obj=sxl_obj.parent.parent)
+            self.treeview_refresh_signal(sxl_obj=sxl_obj.parent.parent)
+        elif sxl_obj.type == Sxl.Table:
+            # Table
+            for row_node in self.tree.get_children(node):
+                addr = int(self.tree.set(item=row_node, column="info"), 0)
+                values = list()
+                # cycle over all table columns to fill data line
+                for col in sxl_obj.get_objects_of_type(Sxl.Column):
+                    status, value = self.treeview_refresh_column(sxl_obj=col, reg_addr=addr)
+                    value_str = self.treeview_decode_signal_value(sxl_obj=col, value=value, status=status)
+                    values.append(value_str)
+                # Table row, list of values
+                self.tree.set(item=row_node, column="data", value=", ".join(values))
+        elif sxl_obj.type == Sxl.Row:
+            # Table row
+            addr = int(self.tree.set(item=node, column="info"), 0)
+            values = list()
+            # cycle over all table columns to fill data line
+            for col in sxl_obj.parent.get_objects_of_type(Sxl.Column):
+                status, value = self.treeview_refresh_column(sxl_obj=col, reg_addr=addr)
+                value_str = self.treeview_decode_signal_value(sxl_obj=col, value=value, status=status)
+                values.append(value_str)
+            # Table row, list of values
+            self.tree.set(item=node, column="data", value=", ".join(values))
 
     def treeview_modify_node(self, event=None):
         """Modify treeview contents."""
@@ -511,6 +663,10 @@ class DasTool(tk.Tk):
         # get selected treeview node
         node = self.tree.selection()
         if not node:
+            return
+        if len(self.tree.get_children(item=node)) > 0 and event.type == tk.EventType.ButtonPress:
+            # leave when double clicked and item has children elements
+            # to prefer open/close of tree element over value update
             return
         if isinstance(node, tuple):
             node = node[0]
@@ -532,7 +688,7 @@ class DasTool(tk.Tk):
                         self.treeview_modify_signal(sxl_obj=sxl_obj, value=0)
                 elif sig_mode == "wo":
                     # get value from Tk toolbox and update here
-                    new = self.ui_value_toolbox(sxl_obj=sxl_obj, new=sig_data, max=sig_max)
+                    new = self.ui_value_toolbox(sxl_obj=sxl_obj, new=sig_data, max_value=sig_max)
                     if new is not None:
                         self.treeview_modify_signal(sxl_obj=sxl_obj, value=int(new))
                 elif sig_mode == "t":
@@ -540,22 +696,35 @@ class DasTool(tk.Tk):
             else:
                 if sig_mode in ["rw", "wo", ""]:
                     # get value from Tk toolbox and update here
-                    new = self.ui_value_toolbox(sxl_obj=sxl_obj, new=sig_data, max=sig_max)
+                    new = self.ui_value_toolbox(sxl_obj=sxl_obj, new=sig_data, max_value=sig_max)
                     if new is not None:
                         self.treeview_modify_signal(sxl_obj=sxl_obj, value=int(new))
         elif sxl_obj.type == Sxl.Enum:
             sig_mode = sxl_obj.parent.get_attr("mode")
             if sig_mode in ["rw", "wo", ""]:
-                value = int(self.tree.set(node, "info"))
+                value = int(self.tree.set(item=node, column="info"))
                 self.treeview_modify_signal(sxl_obj=sxl_obj.parent, value=value)
         elif sxl_obj.type == Sxl.Flag:
             sig_mode = sxl_obj.parent.get_attr("mode")
             if sig_mode in ["rw", "wo", ""]:
-                pos = int(self.tree.set(node, "info"))
-                sig_data = self.tree.set(item=self.sxl_node_dict[sxl_obj.parent], 
-                                         column="data").split(" ")[0]
-                value = int(sig_data) ^ (1 << pos)
-                self.treeview_modify_signal(sxl_obj=sxl_obj.parent, value=value)
+                pos = self.tree.set(item=node, column="info")
+                # TODO: add support of vector flags
+                if ":" not in pos:
+                    sig_data = self.tree.set(item=self.sxl_node_dict[sxl_obj.parent], 
+                                            column="data").split(" ")[0]
+                    value = int(sig_data) ^ (1 << int(pos))
+                    self.treeview_modify_signal(sxl_obj=sxl_obj.parent, value=value)
+        elif sxl_obj.type == Sxl.Table:
+            mode = sxl_obj.get_attr("mode")
+            if mode in ["rw", "wo", ""]:
+                # create table widget, control value updates inside there
+                self.ui_table_toolbox(sxl_obj=sxl_obj)
+        elif sxl_obj.type == Sxl.Row:
+            mode = sxl_obj.parent.get_attr("mode")
+            if mode in ["rw", "wo", ""]:
+                # create table widget, control value updates inside there
+                self.ui_table_toolbox(sxl_obj=sxl_obj.parent)
+
         # Update done, reset busy flag
         self.request_busy = False
 
@@ -564,18 +733,20 @@ class DasTool(tk.Tk):
         if sxl_obj.type == Sxl.Sig:
             # Signals only supported for registers
             reg_obj = sxl_obj.parent
-            block_sig = reg_obj.type == Sxl.Block
+            block_sig = reg_obj.type == Sxl.Block or reg_obj.type == Sxl.Row
             sig_pos = sxl_obj.get_attr("pos").split(":")
             sig_msb = int(sig_pos[0],0)
             sig_lsb = sig_msb if len(sig_pos) == 1 else int(sig_pos[1], 0)
             sig_mode = sxl_obj.get_attr("mode")
             if block_sig:
-                reg_addr = int(self.tree.set(self.sxl_node_dict[sxl_obj], "info").split(" ")[0], 0)
+                reg_addr = int(self.tree.set(item=self.sxl_node_dict[sxl_obj], 
+                                             column="info").split(" ")[0], 0)
                 reg_size = sig_msb//8 + 1
                 if reg_size == 3:
                     reg_size += 1
             else:
-                reg_addr = int(self.tree.set(self.sxl_node_dict[reg_obj], "info").split(" ")[0], 0)
+                reg_addr = int(self.tree.set(item=self.sxl_node_dict[reg_obj], 
+                                             column="info").split(" ")[0], 0)
                 reg_type = reg_obj.get_attr("type")
                 reg_size = 1 if reg_type == "byte" else 2 if reg_type == "word" else 4
 
@@ -593,14 +764,16 @@ class DasTool(tk.Tk):
                 self.treeview_decode_signal(sig=sxl_obj, column="data", reg_value=r_data, status=status)
             else:
                 reg_obj = sxl_obj.parent
-                self.tree.set(self.sxl_node_dict[reg_obj], column="data", value="N/A" if not status else f"0x{r_data:0{reg_size<<1}X}")
+                self.tree.set(item=self.sxl_node_dict[reg_obj], 
+                              column="data", 
+                              value="N/A" if not status else f"0x{r_data:0{reg_size<<1}X}")
                 for child in reg_obj.get_objects_of_type(Sxl.Sig):
                     self.treeview_decode_signal(sig=child, column="data", reg_value=r_data, status=status)
 
-    def treeview_refresh(self, sxl_obj, block_sig: bool = False):
+    def treeview_refresh_signal(self, sxl_obj, block_sig: bool = False):
         """Refresh the treeview."""
         node = self.sxl_node_dict[sxl_obj]
-        if node is None:
+        if node is None or not self.tree.exists(item=node):
             # filter suppression active, node does not exist
             return
         # get combined address from info column and convert to integer
@@ -610,35 +783,35 @@ class DasTool(tk.Tk):
             # check consistency of addr and bit range
             sig_pos = sxl_obj.get_attr("pos").split(":")
             sig_msb = int(sig_pos[0], 0)
-            bytes = sig_msb//8 + 1
+            num_bytes = sig_msb//8 + 1
             # correct read size for 3 bytes signals
-            if bytes == 3:
-                bytes += 1
+            if num_bytes == 3:
+                num_bytes += 1
             # simple sanity check, abort when byte/word/dword does not
             # align into memory granularity
-            if (bytes == 4 and reg_addr & 3 != 0) or \
-               (bytes == 2 and reg_addr & 1 != 0) or \
-               (bytes > 4):
+            if (num_bytes == 4 and reg_addr & 3 != 0) or \
+               (num_bytes == 2 and reg_addr & 1 != 0) or \
+               (num_bytes > 4):
                 return
         else:
             # register type
             reg_type = sxl_obj.get_attr("type")
             if reg_type == "dword" or reg_type == "":
-                bytes = 4
+                num_bytes = 4
             elif reg_type == "word":
-                bytes = 2
+                num_bytes = 2
             elif reg_type == "byte":
-                bytes = 1
+                num_bytes = 1
             else:
                 return # unknown register type
         # try to read data from server
         try:
-            status, r_data = self.sock.read_bytes(reg_addr, bytes)
+            status, r_data = self.sock.read_bytes(reg_addr, num_bytes)
         except ConnectionResetError:
             self.socket_event_connection_lost()
             return
         # visualize result
-        self.tree.set(item=node, column="data", value="N/A" if not status else f"0x{r_data:0{bytes<<1}X}")
+        self.tree.set(item=node, column="data", value="N/A" if not status else f"0x{r_data:0{num_bytes<<1}X}")
         # update children (signals)
         if block_sig:
             self.treeview_decode_signal(sig=sxl_obj, column="data", reg_value=r_data, status=status)
@@ -650,6 +823,8 @@ class DasTool(tk.Tk):
         """Signal value decoder for visualization purposes in treeview columns."""
         # retrieve relevant signal attributes
         node = self.sxl_node_dict[sig]
+        if node is None or not self.tree.exists(item=node):
+            return
         # get signal attributes
         sig_type = sig.get_attr("type")
         sig_mode = sig.get_attr("mode")
@@ -686,10 +861,21 @@ class DasTool(tk.Tk):
                 flag_pos = flag.get_attr("pos").split(":")
                 if len(flag_pos) == 1:
                     flag_value = (sig_value >> int(flag_pos[0])) & 1
-                    self.tree.set(self.sxl_node_dict[flag], column, value=str(flag_value))
-        elif sig_type == "flag":
-            # add flag support here
-            pass
+                    self.tree.set(item=self.sxl_node_dict[flag], column=column, value=str(flag_value))
+                else:
+                    # TODO: add flag support of larger flags here
+                    pass
+            return
+        sig_value_str = self.treeview_decode_signal_value(sxl_obj=sig, value=sig_value, status=status)
+        # visualize
+        self.tree.set(item=node, column=column, value=sig_value_str)
+
+    def treeview_decode_signal_value(self, sxl_obj, value, status=1):
+        if status == 0:
+            return "N/A"
+        # get signal attributes
+        sig_type = sxl_obj.get_attr("type")
+        sig_value = f"{value}"
         # try to decode fixed point notations
         match = re.findall(r"^(s|u)([0-9.]+)$", sig_type.lower())
         if len(match) == 1 and len(match[0]) == 2:
@@ -697,15 +883,14 @@ class DasTool(tk.Tk):
             num = num.split(".")
             if len(num) > 2:
                 # bad fixed point notation
-                return
+                return sig_value
             type_int, type_frac = int(num[0], 0), 0
             if len(num) == 2:
                 type_frac = int(num[1], 0)
-            val = sig_value
             if sign == "u" and type_frac == 0:
                 # fixedpoint notation claims integer value, no conversion required
-                self.tree.set(node, column, value=f"{sig_value}")
-                return
+                return sig_value
+            val = value
             if sign == "s" and val >= (1 << (type_int+type_frac-1)):
                 val -= (1 << (type_int+type_frac))
             if type_frac > 0:
@@ -713,13 +898,66 @@ class DasTool(tk.Tk):
                 val = f"{val / (1<<type_frac):.{ffrac}f}"
             if sign == 's' and type_frac == 0 and val >= 0:
                 # fixedpoint notation claims positive integer value, no conversion required
-                self.tree.set(node, column, value=f"{sig_value}")
-                return
+                return sig_value
 
-            self.tree.set(node, column, value=f"{sig_value} ({val})")
+            sig_value = f"{sig_value} ({val})"
+        return sig_value
+
+    def treeview_refresh_column(self, sxl_obj, reg_addr):
+        """Refresh the treeview."""
+        # check consistency of addr and bit range
+        reg_addr += int(sxl_obj.get_attr("addr"), 0)
+        sig_pos = sxl_obj.get_attr("pos").split(":")
+        sig_msb = int(sig_pos[0], 0)
+        num_bytes = sig_msb//8 + 1
+        # correct read size for 3 bytes signals
+        if num_bytes == 3:
+            num_bytes += 1
+        # simple sanity check, abort when byte/word/dword does not
+        # align into memory granularity
+        if (num_bytes == 4 and reg_addr & 3 != 0) or \
+           (num_bytes == 2 and reg_addr & 1 != 0) or \
+           (num_bytes > 4):
             return
-        # default value visualization
-        self.tree.set(item=node, column=column, value=f"{sig_value}")
+        # try to read data from server
+        try:
+            status, r_data = self.sock.read_bytes(reg_addr, num_bytes)
+        except ConnectionResetError:
+            self.socket_event_connection_lost()
+            return
+        return status, r_data
+
+    def treeview_sort_column(self, column="info"):
+        """
+        Sorts all child objects of each top-level element in the treeview by the content of the chosen column.
+        
+        Args:
+            column: The column identifier to be used for sorting
+        """
+        for item in self.tree.get_children():
+            # Collect all child objects of the current top-level element
+            children = self.tree.get_children(item)
+            
+            # Skip this top-level element if it has no child objects
+            if not children:
+                continue
+            
+            # Sort the child objects by the value in the 'info' column
+            # First create a list with (child-id, info-value) pairs
+            child_info_pairs = [(child, self.tree.item(child, "values")[self.tree["columns"].index(column)] 
+                                if "info" in self.tree["columns"] 
+                                else self.tree.item(child, "text")) 
+                                for child in children]
+            
+            # Sort the list by the info value
+            child_info_pairs.sort(key=lambda x: x[1])
+            
+            # Extract sorted child IDs
+            sorted_children = [child[0] for child in child_info_pairs]
+            
+            # Rearrange child objects in the treeview
+            for i, child in enumerate(sorted_children):
+                self.tree.move(child, item, i)
 
     ##################### user interface functions #####################
     def ui_init(self):
@@ -760,7 +998,7 @@ class DasTool(tk.Tk):
         self.gui["grid"] = grid
         treeColumns = ["info", "reset", "data", "dump"]
         tree = ttk.Treeview(master=grid, columns=treeColumns, \
-                            displaycolumns=treeColumns, selectmode="browse")
+                            displaycolumns=treeColumns, selectmode="browse")#, show='headings')
         vsb = ttk.Scrollbar(master=grid, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(master=grid, orient="horizontal", command=tree.xview)
         vsb.pack(side="right", fill="y")
@@ -857,9 +1095,13 @@ class DasTool(tk.Tk):
         except:
             print(f"Error writing config file '{self.config_file}'")
 
-    def ui_value_toolbox(self, sxl_obj, new: str, max: str):
+    def ui_value_toolbox(self, sxl_obj, new: str, max_value: int):
         """Create the values toolbox."""
-        self.com_values_open = 2
+        if self.value_toolbox_state != ToolboxStates.closed:
+            # already one instance opened
+            return
+        
+        self.value_toolbox_state = ToolboxStates.opened
         self.com_value = tk.StringVar(value=new)
         self.com_values = tk.Toplevel()
         self.com_values.wm_title(sxl_obj.name)
@@ -874,8 +1116,10 @@ class DasTool(tk.Tk):
         self.com_values.wm_geometry(newGeometry=f"+{posx}+{posy}")
 
         def post_command(event=None, stat: int=0):
-            self.com_values_open = stat
+            self.value_toolbox_state = stat
             self.com_values.destroy()
+            self.com_values = None
+
         self.com_values.protocol(name="WM_DELETE_WINDOW", func=post_command)
         f = ttk.Frame(master=self.com_values)
         e = ttk.Entry(master=f, width=32, justify=tk.CENTER, textvariable=self.com_value)
@@ -887,31 +1131,11 @@ class DasTool(tk.Tk):
         e.focus()
         e.selection_range(start=0, end=tk.END)
 
-        def get_value(value: str):
-            """Get integer value from entry field textvariable, return None if invalid."""
-            if value.isdecimal():
-                val = int(value, 0)
-                if val >= 0 and val <= max:
-                    return val
-            else:
-                # hex match, binary match
-                x_match = re.findall(r"^0x([0-9a-fA-F]+)$", value)
-                b_match = re.findall(r"^0b([01]+)$", value)
-                if len(x_match) == 1:
-                    val = int(x_match[0], 16)
-                    if val >= 0 and val <= max:
-                        return val
-                if len(b_match) == 1:
-                    val = int(b_match[0], 2)
-                    if val >= 0 and val <= max:
-                        return val
-            return None
-
         def set_widget_state(event=None):
             """Set the widget state."""
             # disable ok button per default
             # enable it again after input checks are successful
-            value = get_value(value=self.com_value.get())
+            value = get_int_value(value=self.com_value.get(), max_value=max_value)
             if value is None:
                 self.com_values_b.configure(state=tk.DISABLED)
             else:
@@ -919,11 +1143,9 @@ class DasTool(tk.Tk):
 
         def accept_widget_state(event=None):
             """Set the widget state to accept if value is not None."""
-            value = get_value(value=self.com_value.get())
+            value = get_int_value(value=self.com_value.get(), max_value=max_value)
             if value is not None:
-                self.com_values_open = 1
-                self.com_values.destroy()
-
+                post_command(stat=1)
 
         set_widget_state()
         # bind events
@@ -932,20 +1154,128 @@ class DasTool(tk.Tk):
         e.bind(sequence="<Return>", func=accept_widget_state)
         e.bind(sequence="<KP_Enter>", func=accept_widget_state)
         e.bind(sequence="<Extended-Return>", func=accept_widget_state)
-        while self.com_values_open == 2:
+        while self.value_toolbox_state == ToolboxStates.opened:
             # FSM wait loop: wait for user response
             time.sleep(0.1)
             self.update()
-        if self.com_values_open == 0:
+        if self.value_toolbox_state == ToolboxStates.closed:
             # aborted
             return None
+        self.value_toolbox_state = ToolboxStates.closed
         # get and return new value
-        new = get_value(value=self.com_value.get())
+        new = get_int_value(value=self.com_value.get(), max_value=max_value)
         if new is None:
             # sanity check, should never happen!
             messagebox.showerror(title="Error", message=f"Invalid number '{new}'!")
             return None
         return new
+
+    def ui_table_toolbox(self, sxl_obj):
+        if self.table_toolbox_state != ToolboxStates.closed:
+            # already one instance opened
+            return
+        self.table_toolbox_state = 2
+
+        # create toolbox window
+        self.com_table = tk.Toplevel()
+        self.com_table.wm_title(sxl_obj.name)
+        self.com_table.attributes("-topmost", 1)
+        if platform.system() == "Windows":
+            # toolbox style supported on windows platforms only
+            self.com_table.attributes("-toolwindow", True)
+        # window size handling, set position around mouse pointer
+        sizex, sizey = 360, 480
+        posx, posy = self.com_table.winfo_pointerxy()
+        offx, offy = max(posx-sizex//2, 50), max(posy-sizey//2, 50)
+        self.com_table.wm_geometry(newGeometry=f"{sizex}x{sizey}+{offx}+{offy}")
+
+        def post_command(event=None, stat: int=0):
+            self.table_toolbox_state = stat
+            self.com_table.destroy()
+            self.com_table = None
+
+        self.com_table.protocol(name="WM_DELETE_WINDOW", func=post_command)
+        
+        columns = list()
+        column_max = list()
+        for col in sxl_obj.get_objects_of_type(Sxl.Column):
+            columns.append(col.name)
+            sig_pos  = col.get_attr("pos").split(":")
+            sig_msb = int(sig_pos[0],0)
+            sig_lsb = sig_msb if len(sig_pos) == 1 else int(sig_pos[1], 0)
+            sig_max = 0 if sig_lsb > sig_msb else (1 << (1+sig_msb-sig_lsb)) - 1
+            column_max.append(sig_max)
+
+        # read table completly from target and show current values
+        current_data = list()
+        sxl_objs = list()
+        if sxl_obj.type == Sxl.Table:
+            base_addr = int(self.tree.set(item=self.sxl_node_dict[sxl_obj], column="info"), 0)
+        elif sxl_obj.type == Sxl.Row:
+            table_obj = sxl_obj.parent
+            base_addr = int(self.tree.set(item=self.sxl_node_dict[table_obj], column="info"), 0)
+        else:
+            # unknown type, leave here
+            self.table_toolbox_state = ToolboxStates.closed
+            return
+
+        # retrieve full table data content from target
+        for row_obj in sxl_obj.get_objects_of_type(Sxl.Row):
+            row_line = list()
+            row_objs = list()
+            row_addr = base_addr + get_int_value(row_obj.get_attr("addr"))
+            for sig_obj in row_obj.get_objects_of_type(Sxl.Sig):
+                # read content of row column here
+                status, value = self.treeview_refresh_column(sxl_obj=sig_obj, reg_addr=row_addr)
+                value_str = self.treeview_decode_signal_value(sxl_obj=sig_obj, value=value, status=status)
+                row_line.append(value_str)
+                row_objs.append(sig_obj)
+            current_data.append(row_line)
+            sxl_objs.append(row_objs)
+
+        def table_modify_signal(sxl_obj, value=None, base_addr=0):
+            """Modify signal."""
+            if sxl_obj.type == Sxl.Sig:
+                # get base address of current table row
+                row_obj = sxl_obj.parent
+                row_addr = base_addr + get_int_value(row_obj.get_attr("addr"))
+                # prepare signal access
+                sig_pos = sxl_obj.get_attr("pos").split(":")
+                sig_msb = int(sig_pos[0],0)
+                sig_lsb = sig_msb if len(sig_pos) == 1 else int(sig_pos[1], 0)
+                sig_mode = sxl_obj.get_attr("mode")
+                # object carries the absolute target address in "addr" attribute
+                reg_addr = row_addr + get_int_value(sxl_obj.get_attr("addr"))
+                reg_size = sig_msb//8 + 1
+                if reg_size == 3:
+                    reg_size += 1
+
+                if sig_mode == "t":
+                    # send trigger
+                    w_mask = (1 << (sig_msb+1)) - (1 << sig_lsb)
+                    status, r_data = self.sock.modify_bytes(reg_addr, w_mask, w_mask, reg_size)
+                else:
+                    # toggle single bit flags
+                    w_mask = (1 << (sig_msb+1)) - (1 << sig_lsb)
+                    w_data = value << sig_lsb
+                    status, r_data = self.sock.modify_bytes(reg_addr, w_data, w_mask, reg_size)
+                # TODO: update children (signals of table)
+                #self.treeview_decode_signal(sig=sxl_obj, column="data", reg_value=r_data, status=status)
+
+        # Create the editable table widget
+        EditableTableWidget(self.com_table, columns, current_data, column_max, 
+                            sxl_objs=sxl_objs, 
+                            base_addr=base_addr,
+                            format_func=self.treeview_decode_signal_value,
+                            update_func=table_modify_signal)
+
+        # wait for response of the EditableTableWidget
+        while self.table_toolbox_state == 2:
+            time.sleep(0.1)
+            self.update()
+        
+        # window was closed, clean exit
+        self.table_toolbox_state = ToolboxStates.closed
 
 if __name__ == "__main__":
     dt = DasTool()

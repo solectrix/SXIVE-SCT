@@ -143,9 +143,12 @@ class SocketIO:
         assert addr >= 0 and addr < 1 << 32, "Address out of 32bit range: " + addr
         assert data >= 0 and data < 1 << 32, "Data out of range: " + data
         assert bits >= 0 and bits < 256, "Invalid write size: " + bits + " bits"
-        assert device >= 0 and device < 256, "Device address out of range: " + device
-        if device >= 0:
+        assert device == NO_DEVICE_ADDR or (device >= 0 and device < 256), \
+                    "Device address out of range: " + device
+        if device != NO_DEVICE_ADDR:
+            # override device address of sxl definition
             addr = (device << 24) | (addr & 0xFFFFFF)
+        # create packet
         packet = bytearray()
         packet.extend(b"w")  # cmd
         packet.extend(bits.to_bytes(length=1, byteorder="little"))  # size
@@ -178,9 +181,12 @@ class SocketIO:
         device = self.device_addr_int
         assert addr >= 0 and addr < 1 << 32, "Address out of 32bit range: " + addr
         assert bits >= 0 and bits < 256, "Invalid read size: " + bits + " bits"
-        assert device >= 0 and device < 256, "Device address out of range: " + device
-        if device >= 0:
+        assert device == NO_DEVICE_ADDR or (device >= 0 and device < 256), \
+                    "Device address out of range: " + device
+        if device != NO_DEVICE_ADDR:
+            # override device address of sxl definition
             addr = (device << 24) | (addr & 0xFFFFFF)
+        # create packet
         packet = bytearray()
         packet.extend(b"r")  # cmd
         packet.extend(bits.to_bytes(length=1, byteorder="little"))  # size

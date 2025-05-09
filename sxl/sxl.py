@@ -3,12 +3,10 @@
 import os
 import tkinter
 import warnings
+import typing
 from copy import copy
 
 warnings.simplefilter("default")
-
-SPACE = " "
-NEWLINE = "\n"
 
 # SXL identifiers
 class Sxl:
@@ -19,15 +17,50 @@ class Sxl:
     Sig = "signal"
     Enum = "enum"
     Flag = "flag"
+    Table = "table"
+    Row = "row"
+    Column = "column"
     Icon = "intercon"
     Mst = "master"
     Slv = "slave"
+
+# Read README.md for more info
+DEFAULT_SXL_CONFIG = {
+    "hierarchy": {
+        Sxl.Dev:    [Sxl.Root],
+        Sxl.Root:   [Sxl.Block, Sxl.Icon],
+        Sxl.Block:  [Sxl.Sig, Sxl.Reg, Sxl.Table],
+        Sxl.Reg:    [Sxl.Sig],
+        Sxl.Sig:    [Sxl.Enum, Sxl.Flag],
+        Sxl.Enum:   [],
+        Sxl.Flag:   [],
+        Sxl.Table:  [Sxl.Column, Sxl.Row],
+        Sxl.Row:    [Sxl.Sig],
+        Sxl.Column: [],
+        Sxl.Icon:   [Sxl.Mst, Sxl.Slv],
+        Sxl.Mst:    [],
+        Sxl.Slv:    []},
+    "attributes": {
+        Sxl.Root:   ["desc", "name", "project", "version", "date", "author"],
+        Sxl.Block:  ["desc", "size", "tags"],
+        Sxl.Reg:    ["desc", "addr", "type", "tags"],
+        Sxl.Sig:    ["desc", "addr", "pos", "mode", "type", "reset", "tags"],
+        Sxl.Enum:   ["desc", "value", "tags"],
+        Sxl.Flag:   ["desc", "pos", "type", "tags"],
+        Sxl.Table:  ["desc", "addr", "mode", "length", "stride", "type", "tags"],
+        Sxl.Row:    ["desc", "addr"],
+        Sxl.Column: ["desc", "addr", "pos", "mode", "type", "reset", "tags"],
+        Sxl.Icon:   ["desc", "type", "databits", "mask"],
+        Sxl.Mst:    ["desc", "type"],
+        Sxl.Slv:    ["desc", "type", "block", "icon", "addr", "size", "mask"]}
+}
+
 
 # load the sxl config
 class SxlConfig:
     """SXL Config class."""
     def __init__(self, sxl_dict: dict = None):
-        if not sxl_dict is None:
+        if sxl_dict is not None:
             for key in sxl_dict.keys():
                 if isinstance(sxl_dict[key], dict):
                     setattr(self, key, SxlConfig())
@@ -56,22 +89,18 @@ class SxlObject:
     * :attr:`parent` private parent of the object being created
     * :attr:`name` private name of the object, can be set by creating the object and
         read by function getName()
-    * :attr:`attr_dict` private list of assigned child objects
-        objects can be:
-        - added by function 'add_object()' and
-        - retrieved by various functions, like: getObjects(), get_object_of_name(), getObjectOfType(), ...
-        Objects attributes can also be determined by function num_objects()
+    * :attr:`sxl_type` sxl type of the object
+    * :attr:`config` sxl configuration of the sxl root
     """
 
-    def __init__(self, parent, name: str, attr_dict: dict):
-        self.config = SxlConfig(DEFAULT_SXL_CONFIG)
+    def __init__(self, parent, name: str, sxl_type: str, config: dict):
+        self._config = config
         self._parent = parent
         self._name = name
-        obj_dict = getattr(self.config, attr_dict)
-        self._type = obj_dict.type
+        self._type = sxl_type
         self._objs = list()
         self._attrs = dict()
-        self._attr_list = obj_dict.attrs
+        self._attr_list = getattr(self._config.attributes, sxl_type)
 
     @property
     def parent(self):
@@ -112,7 +141,7 @@ class SxlObject:
         # renew object list
         self._objs = list()
 
-    def set_attr(self, attr_name, attr_value):
+    def set_attr(self, attr_name: str, attr_value):
         """Set an SxlObject's attribute value.
         Args:
             attr_name - identifier of the SxlObject's attribute
@@ -122,7 +151,7 @@ class SxlObject:
         else:
             self._attrs[attr_name] = attr_value
 
-    def get_attr(self, attr_name, default=""):
+    def get_attr(self, attr_name: str, default: str="") -> str:
         """Get the SxlObject's attribute value
         Args:
             attr_name - identifier (name) of the SxlObject's attribute,
@@ -146,30 +175,30 @@ class SxlObject:
         """Returns the number of registered child objects of a parent object."""
         return len(self._objs)
 
-    def num_objects_of_type(self, type) -> int:
-        """Returns the number of registered types."""
-        return len([i for i in self._objs if i.type == type])
+    def num_objects_of_type(self, sxl_type) -> int:
+        """Returns the number of registered sxl_types."""
+        return len([i for i in self._objs if i.type == sxl_type])
 
-    def get_object_type_list(self, type):
-        """Return a list of object types."""
-        return [i for i in self._objs if i.type == type]
+    def get_object_type_list(self, sxl_type):
+        """Return a list of object sxl_types."""
+        return [i for i in self._objs if i.type == sxl_type]
 
-    def get_objects_of_type(self, type):
-        """Function to return a child object list with an explicit type.
+    def get_objects_of_type(self, sxl_type):
+        """Function to return a child object list with an explicit sxl_type.
         Args:
             type - instance type to compile for
         """
         objs = list()
         for obj in self._objs:
-            if obj.type == type:
+            if obj.type == sxl_type:
                 # check current level
                 objs.append(obj)
             else:
                 # check sub-levels when relevant
-                objs.extend(obj.get_objects_of_type(type))
+                objs.extend(obj.get_objects_of_type(sxl_type))
         return objs
 
-    def get_object_of_name(self, name):
+    def get_object_of_name(self, name: str) -> typing.Union["SxlObject", None]:
         """Function to return a child object with an explicit name identifier.
         Args:
             name - name identifier to look for
@@ -180,7 +209,7 @@ class SxlObject:
         else:
             return obj[0]
 
-    def add_object(self, obj):
+    def add_object(self, obj) -> "SxlObject":
         """Function to add a child object to a SXL object parent.
         Args:
             obj - object of type SxlObject to be added
@@ -201,7 +230,7 @@ class SxlObject:
         self._objs.append(obj)
         return obj
 
-    def new(self, type: type, name: str, attr_dict: dict = {}):
+    def new(self, sxl_type: str, name: str, attr_dict: dict = None) -> "SxlObject":
         """function to create a new SXL object.
         Args:
             type: type of the new object
@@ -210,11 +239,14 @@ class SxlObject:
         .. note::
             the plausibility check is temporary
         """
+        if attr_dict is None:
+            attr_dict = dict()
+            
         # validate consistency of definition (check with hierarchy configuration) and
         # retrieve type specifier
-        child_type = self._get_child_type(self, type)
+        child_type = self._get_child_type(self, sxl_type)
         # create the new object
-        obj = self.add_object(obj=SxlObject(self, name, child_type))
+        obj = self.add_object(obj=SxlObject(self, name, child_type, self._config))
         for i in attr_dict.keys():
             obj.set_attr(attr_name=i, attr_value=attr_dict[i])
         return obj
@@ -227,15 +259,15 @@ class SxlObject:
         return new_obj
 
     ##################### Helper functions #####################
-    def _get_child_type(self, obj, child_type):
+    def _get_child_type(self, obj, child_type: str):
         """Check plausibility of requested object type and return a proper.
         SXL Type classifier.
         An exception is thrown when an unexpected type was requested.
         Args:
             type: type of the new object
         """
-        for child in getattr(self.config.hierarchy, obj.type):
-            if getattr(self.config, child).type == child_type:
+        for child in getattr(self._config.hierarchy, obj.type):
+            if child == child_type:
                 return child  # found
         raise ValueError(
             f'hierarchy error with "{obj.name}:{obj.type}", no child type "{child_type}" possible!'
@@ -253,19 +285,14 @@ class SxlObject:
 
 class SxlRoot(SxlObject):
     """SXL root object class.
-    * :attr:`_objs` private list of assigned child objects
-        objects can be:
-        - added by function 'add_object()' and
-        - retrieved by various functions, like: getObjects(), get_object_of_name(), getObjectOfType(), ...
-        Objects attributes can also be determined by function num_objects()
-    Args:
-        name: identifier of the object, can be in CamelCase format
-        attr_dict: descriptor of the object type according to SXL Config applied
+    * :attr:`sxl_config` sxl config structure, leave None for default
     """
 
-    def __init__(self):
-        super().__init__(parent=None, name=Sxl.Root, attr_dict="root_type")
-        self.groups = True  # do create item groups, or not
+    def __init__(self, config_dict: dict=None):
+        if config_dict is None:
+            config_dict = DEFAULT_SXL_CONFIG
+        super().__init__(parent=None, name=Sxl.Root, sxl_type=Sxl.Root, config=SxlConfig(config_dict))
+        self._create_groups = True  # do create item groups, or not
         self.tcl = tkinter.Tcl()
 
     def _strip_dict(self, data_dict):
@@ -284,10 +311,9 @@ class SxlRoot(SxlObject):
         super().init()
 
     ##################### SXL Import #####################
-    def import_object_tree(self, root):
+    def import_object_tree(self, root: SxlObject):
         """Import object tree from another root object."""
-        if root.type != "root":
-            raise ValueError("Object is not a root object!")
+        assert root.type == Sxl.Root, "Object is not a root object!"
         for obj in root.objects:
             if obj in self.objects:
                 raise ValueError("Object already exists!")
@@ -298,15 +324,15 @@ class SxlRoot(SxlObject):
                 self.add_object(new)
 
     ##################### SXL Loader #####################
-    def load(self, file, verbose=False):
+    def load(self, file: str, verbose: bool=False):
         """Parse file for registered SXL structure."""
 
         def parse_level(parent, level, data_dict, verbose=False):
-            if level == self.config.Dev:
+            if level == Sxl.Dev:
                 # root attributes == device attributes
                 sxl_type = level
-                sxl_types = [self.config.Dev]
-                sxl_attrs = self.config.root_type.attrs
+                sxl_types = [Sxl.Dev]
+                sxl_attrs = getattr(self._config.attributes, sxl_type)
                 for item_attr in data_dict.keys():
                     if item_attr in sxl_attrs:
                         if verbose:
@@ -317,12 +343,11 @@ class SxlRoot(SxlObject):
                 # all other SXL types
                 sxl_type = level[:-1]
                 sxl_types = [
-                    getattr(self.config, i).type
-                    for i in getattr(self.config.hierarchy, parent.type)
+                    i for i in getattr(self._config.hierarchy, parent.type)
                 ]
                 sxl_attrs = [
-                    getattr(self.config, i).attrs
-                    for i in getattr(self.config.hierarchy, parent.type)
+                    getattr(self._config.attributes, i)
+                    for i in sxl_types
                 ]
 
                 if sxl_type in sxl_types:
@@ -376,11 +401,13 @@ class SxlRoot(SxlObject):
         return None
 
     ##################### SXL Saver #####################
-    def save(self, file):
+    def save(self, file: str):
         """Save full SXL structure to file.
         Args:
             file - filename
         """
+        SPACE = " "
+        NEWLINE = "\n"
 
         def add_attrs(f, obj, indent):
             """Write attributes to file.
@@ -393,19 +420,21 @@ class SxlRoot(SxlObject):
             for parName in obj.attr_list:
                 if parName in obj.attrs.keys():
                     parValue = obj.get_attr(parName)
+                    if parValue == "":
+                        # skip empty parameters
+                        continue
+
+                    # write attribute to file
                     f.write(SPACE * indent + "{:7} ".format(parName))
-                    if type(parValue) is list and len(parValue) == 2:
-                        # targets 'pos' fields
-                        f.write(":".join(str(i) for i in parValue) + NEWLINE)
-                    elif not isinstance(parValue, str):
-                        f.write(str(parValue) + NEWLINE)
-                    elif SPACE in parValue:
-                        # handle 'desc' fields with spaces
+                    if not isinstance(parValue, str):
+                        parValue = str(parValue)
+                    if SPACE in parValue:
+                        # wrap in curly brackets if more than one word
                         f.write("{" + parValue + "}" + NEWLINE)
                     else:
                         f.write(parValue + NEWLINE)
 
-        def add_level(f, obj, indent, sxl_type, hierarchy):
+        def add_level(f, obj, indent, sxl_type):
             """Iterate through full hierarchical SXL level and write to SXL file.
             Args:
                 f - file handler
@@ -413,17 +442,17 @@ class SxlRoot(SxlObject):
                 indent - current indentation level
                 hierarchy - description of SXL hierarchy to save
             """
-            for level in getattr(hierarchy, sxl_type):
-                sxl_type = getattr(self.config, level).type
-                if obj.num_objects_of_type(sxl_type) > 0:
-                    if self.groups:
-                        f.write(SPACE * indent + sxl_type + "s {" + NEWLINE)
-                    for curr_obj in obj.get_object_type_list(sxl_type):
+            for sub_type in getattr(self._config.hierarchy, sxl_type):
+                if obj.num_objects_of_type(sub_type) > 0:
+                    if self._create_groups:
+                        f.write(SPACE * indent + sub_type + "s {" + NEWLINE)
+                    for curr_obj in obj.get_object_type_list(sub_type):
                         # indentation according to group configuration
-                        ind = indent + 2 * int(self.groups)
+                        ind = indent + 2 * int(self._create_groups)
                         # open new group with current object identifier
                         name = curr_obj.name
                         if SPACE in name:
+                            # wrap in curly brackets if more than one word
                             f.write(SPACE * ind + "{" + name + "} {" + NEWLINE)
                         else:
                             f.write(SPACE * ind + name + " {" + NEWLINE)
@@ -432,10 +461,10 @@ class SxlRoot(SxlObject):
                         # objects
                         if curr_obj.num_objects() > 0:
                             # handle object children
-                            add_level(f, curr_obj, indent + 4, sxl_type, hierarchy)
+                            add_level(f, curr_obj, indent + 4, sub_type)
                         # close group with current object identifier
                         f.write(SPACE * ind + "}" + NEWLINE)
-                    if self.groups:
+                    if self._create_groups:
                         # grouping: close item type group
                         f.write(SPACE * indent + "}" + NEWLINE)
 
@@ -446,18 +475,18 @@ class SxlRoot(SxlObject):
         with open(file, "w") as f:
             # add device attributes when available
             if len(self.attrs) > 0:
-                f.write(self.config.Dev + " {" + NEWLINE)
+                f.write(self._config.Dev + " {" + NEWLINE)
                 add_attrs(f, self, 4)
                 f.write("}" + NEWLINE)
             # main SXL definitions
-            add_level(f, self, 0, "root", self.config.hierarchy)
+            add_level(f, self, 0, Sxl.Root)
 
     ##################### SXL helper functions #####################
     def findIconTop(self):
         """find the top SXL Icon object of the provided hierarchy, if known."""
-        iconList = self.get_objects_of_type(self.config.Icon)
-        mstList = self.get_objects_of_type(self.config.Mst)
-        slvList = self.get_objects_of_type(self.config.Slv)
+        iconList = self.get_objects_of_type(Sxl.Icon)
+        mstList = self.get_objects_of_type(Sxl.Mst)
+        slvList = self.get_objects_of_type(Sxl.Slv)
         if len(iconList) == 0:
             return None
         topIcon = iconList[0]
@@ -487,7 +516,7 @@ class SxlRoot(SxlObject):
         """Partial scan of SXL hierarchy structure."""
         if block_list is None:
             block_list = list()
-        for slave in top.get_objects_of_type(self.config.Slv):
+        for slave in top.get_objects_of_type(Sxl.Slv):
             slv_name = slave.name
             slv_id = slv_name
             if "icon" in slave.attrs.keys():
@@ -504,7 +533,7 @@ class SxlRoot(SxlObject):
                 continue
             addr = (addr & mask_base) | addr_base
             # masters
-            for master in self.get_objects_of_type(self.config.Mst):
+            for master in self.get_objects_of_type(Sxl.Mst):
                 mst_root = master.parent
                 mst_name = master.name
                 if mst_name == slv_name:
@@ -512,71 +541,15 @@ class SxlRoot(SxlObject):
                         mst_root, addr, size, mask, f"{loc}->{slv_id}", block_list
                     )
             # resolve block links of all existing slaves
-            if self.config.Block in slave.attrs.keys():
-                block_name = slave.attrs[self.config.Block]
+            if Sxl.Block in slave.attrs.keys():
+                block_name = slave.attrs[Sxl.Block]
                 block = self.get_object_of_name(block_name)
                 block_addr = -1
                 block_size = -1
-                if block != None and block.type == self.config.Block:
+                if block is not None and block.type == Sxl.Block:
                     if "size" in block.attrs.keys():
                         block_size = int(block.attrs["size"], 0)
                     block_addr = addr
                 # add block to list with properties: name, addr, size, location
                 block_list.append([block, block_addr, block_size, f"{loc}->{slv_id}"])
         return block_list
-
-# Read README.md for more info
-DEFAULT_SXL_CONFIG = {
-    "Root": Sxl.Root,
-    "Dev": Sxl.Dev,
-    "Block": Sxl.Block,
-    "Reg": Sxl.Reg,
-    "Sig": Sxl.Sig,
-    "Enum": Sxl.Enum,
-    "Flag": Sxl.Flag,
-    "Icon": Sxl.Icon,
-    "Mst": Sxl.Mst,
-    "Slv": Sxl.Slv,
-    "root_type": {
-        "type": Sxl.Root,
-        "attrs": ["desc", "name", "project", "version", "date", "author"],
-    },
-    "block_type": {"type": "block", "attrs": ["desc", "size", "tags"]},
-    "reg_type": {
-        "type": "register",
-        "attrs": ["desc", "addr", "type", "tags"],
-    },
-    "sig_type": {
-        "type": Sxl.Sig,
-        "attrs": [
-            "desc",
-            "addr",
-            "pos",
-            "mode",
-            "type",
-            "reset",
-            "tags",
-        ],
-    },
-    "enum_type": {"type": Sxl.Enum, "attrs": ["desc", "value", "tags"]},
-    "flag_type": {"type": Sxl.Flag, "attrs": ["desc", "pos", "type", "tags"]},
-    "icon_type": {"type": Sxl.Icon, "attrs": ["desc", "type", "databits", "mask"]},
-    "mst_type": {"type": Sxl.Mst, "attrs": ["desc", "type"]},
-    "slv_type": {
-        "type": Sxl.Slv,
-        "attrs": ["desc", "type", "block", "icon", "addr", "size", "mask"],
-    },
-    "hierarchy": {
-        "device": ["root_type"],
-        "root": ["block_type", "icon_type"],
-        "block": ["sig_type", "reg_type"],
-        "record": ["sig_type"],
-        "register": ["sig_type"],
-        "signal": ["enum_type", "flag_type"],
-        "enum": [],
-        "flag": [],
-        "intercon": ["mst_type", "slv_type"],
-        "master": [],
-        "slave": [],
-    },
-}
